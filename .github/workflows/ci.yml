@@ -32,18 +32,16 @@ jobs:
       - name: Build project
         run: yarn build || echo "Build skipped"
 
-      # === SAST: Semgrep ===
+      # === SAST: Semgrep (падает при находках) ===
       - name: Run Semgrep (SAST)
         id: semgrep
         run: |
           pip install semgrep
-          semgrep --config=p/security-audit --config=p/owasp-top-ten --json -o semgrep-report.json . || true
           semgrep --config=p/security-audit --config=p/owasp-top-ten .
-        continue-on-error: true
 
-      # === Security Gateway: комментарий в PR ===
+      # === Security Gateway: комментарий в PR при падении ===
       - name: Comment on PR if Semgrep found issues
-        if: steps.semgrep.outcome == 'failure' && github.event_name == 'pull_request'
+        if: failure() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -66,16 +64,9 @@ jobs:
               Подробнее: https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions`
             })
 
-      # === Security Gateway: остановка релиза ===
-      - name: Fail pipeline if Semgrep found critical issues
-        if: steps.semgrep.outcome == 'failure'
-        run: |
-          echo "❌ Security Gateway: релиз заблокирован из-за уязвимостей"
-          exit 1
-
       # === Security Check: TruffleHog ===
       - name: Run TruffleHog (secret scanning)
-        if: steps.semgrep.outcome == 'success'
+        if: success()
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
@@ -83,7 +74,7 @@ jobs:
 
       # === Security Check: Trivy ===
       - name: Run Trivy (filesystem)
-        if: steps.semgrep.outcome == 'success'
+        if: success()
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
@@ -93,7 +84,7 @@ jobs:
           severity: 'CRITICAL,HIGH'
 
       - name: Run Trivy (Dockerfile)
-        if: steps.semgrep.outcome == 'success'
+        if: success()
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'config'
