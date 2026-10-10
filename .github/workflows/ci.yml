@@ -1,46 +1,62 @@
-name: CI
+name: CI/CD with DevSecOps
 
 on:
   push:
-    branches:
-      - master
-      - develop
-      - 'feature/**'
-      - 'bugfix/**'
-      - 'hotfix/**'
-      - 'release/**'
+    branches: [master, main]
   pull_request:
-    branches:
-      - master
-      - develop
+    branches: [master, main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
-env:
-  NX_DAEMON: 'false'
-
 jobs:
-  build:
-    name: Build
+  build-and-scan:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: yarn
+          node-version: 20
 
       - name: Install dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Generate Prisma client
-        run: npx prisma generate
-
-      - name: Build application
+      - name: Build project
         run: yarn build
+
+      # === SAST: Semgrep ===
+      - name: Run Semgrep (SAST)
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+
+      # === Security Check: TruffleHog (secrets) ===
+      - name: Run TruffleHog (secret scanning)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+
+      # === Security Check: Trivy (filesystem scan) ===
+      - name: Run Trivy (filesystem)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+      # === Security Check: Trivy (Dockerfile) ===
+      - name: Run Trivy (Dockerfile)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'Dockerfile'
+          format: 'table'
+          exit-code: '0'
