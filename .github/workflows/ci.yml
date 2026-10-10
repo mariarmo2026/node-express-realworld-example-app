@@ -37,7 +37,7 @@ jobs:
         id: semgrep
         run: |
           pip install semgrep
-          semgrep --config=p/security-audit --config=p/owasp-top-ten .
+          semgrep --config=p/security-audit --config=p/owasp-top-ten --error .
 
       # === Security Gateway: комментарий в PR при падении ===
       - name: Comment on PR if Semgrep found issues
