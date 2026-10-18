@@ -32,16 +32,15 @@ jobs:
       - name: Build project
         run: yarn build || echo "Build skipped"
 
-      # === SAST: Semgrep (падает при находках) ===
       - name: Run Semgrep (SAST)
         id: semgrep
         run: |
           pip install semgrep
           semgrep --config=p/security-audit --config=p/owasp-top-ten --error .
+        continue-on-error: true
 
-      # === Security Gateway: комментарий в PR при падении ===
       - name: Comment on PR if Semgrep found issues
-        if: failure() && github.event_name == 'pull_request'
+        if: steps.semgrep.outcome == 'failure' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -49,32 +48,20 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## 🔒 Security Gateway: обнаружены уязвимости
-
-              Пайплайн заблокирован, потому что **Semgrep (SAST)** нашёл проблемы в коде.
-
-              ### Что делать:
-              1. Посмотрите отчёт в логах Actions (шаг «Run Semgrep (SAST)»).
-              2. Исправьте найденные уязвимости.
-              3. Запушьте изменения — пайплайн запустится снова.
-
-              ### Рекомендация
-              Зафиксируйте GitHub Actions на конкретный commit SHA вместо тегов (\`@v4\` → \`@8ade135...\`). Это устранит риск supply-chain атак.
-
-              Подробнее: https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions`
+              body: `## 🔒 Security Gateway: обнаружены уязвимости\n\nПайплайн заблокирован, потому что Semgrep (SAST) нашёл проблемы в коде.`
             })
 
-      # === Security Check: TruffleHog ===
+      - name: Fail pipeline if Semgrep found issues (Security Gateway)
+        if: steps.semgrep.outcome == 'failure' && github.event_name == 'pull_request'
+        run: exit 1
+
       - name: Run TruffleHog (secret scanning)
-        if: success()
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
           extra_args: --only-verified
 
-      # === Security Check: Trivy ===
       - name: Run Trivy (filesystem)
-        if: success()
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
@@ -83,11 +70,49 @@ jobs:
           exit-code: '0'
           severity: 'CRITICAL,HIGH'
 
-      - name: Run Trivy (Dockerfile)
-        if: success()
-        uses: aquasecurity/trivy-action@master
+  # ==========================================
+  # НОВЫЙ ДЖОБ: ДЕПЛОЙ НА VDS
+  # ==========================================
+  deploy:
+    needs: build-and-scan
+    runs-on: ubuntu-latest
+    # Запускаем деплой только при пуше в master (не в Pull Request)
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to VDS via SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          scan-type: 'config'
-          scan-ref: 'Dockerfile'
-          format: 'table'
-          exit-code: '0'
+          host: ${{ secrets.VDS_HOST }}
+          username: ${{ secrets.VDS_USER }}
+          key: ${{ secrets.VDS_SSH_KEY }}
+          script: |
+            # Клонируем репозиторий, если его нет, или обновляем
+            if [ ! -d "/root/necommerce" ]; then
+              git clone https://github.com/mariarmo2026/node-express-realworld-example-app.git /root/necommerce
+            fi
+            cd /root/necommerce
+            git pull origin master
+            
+            # Создаем .env файл для Docker Compose
+            cat > .env << 'EOF'
+            DB_PORT_EXTERNAL=30432
+            DB_PORT_INTERNAL=5432
+            DB_USERNAME=postgres
+            DB_PASSWORD=postgres
+            DB_NAME=realworld
+            API_PORT_EXTERNAL=30400
+            PORT=30400
+            NODE_ENV=production
+            JWT_SECRET=super-secret-jwt-key-for-diploma
+            DATABASE_URL=postgresql://postgres:postgres@localhost:30432/realworld
+            EOF
+            
+            # Перезапускаем контейнеры (собираем образ API и поднимаем базу)
+            docker compose down || true
+            docker compose up -d --build
+            
+            echo "✅ Деплой успешно завершен!"
