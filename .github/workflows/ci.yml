@@ -32,6 +32,7 @@ jobs:
       - name: Build project
         run: yarn build || echo "Build skipped"
 
+      # === SAST: Semgrep ===
       - name: Run Semgrep (SAST)
         id: semgrep
         run: |
@@ -39,6 +40,7 @@ jobs:
           semgrep --config=p/security-audit --config=p/owasp-top-ten --error .
         continue-on-error: true
 
+      # === Security Gateway: комментарий в PR ===
       - name: Comment on PR if Semgrep found issues
         if: steps.semgrep.outcome == 'failure' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -48,19 +50,22 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## 🔒 Security Gateway: обнаружены уязвимости\n\nПайплайн заблокирован, потому что Semgrep (SAST) нашёл проблемы в коде.`
+              body: `## 🔒 Security Gateway: обнаружены уязвимости\n\nПайплайн заблокирован, потому что Semgrep (SAST) нашёл проблемы в коде.\n\n### Рекомендация\nЗафиксируйте GitHub Actions на конкретный commit SHA вместо тегов.`
             })
 
-      - name: Fail pipeline if Semgrep found issues (Security Gateway)
+      # === Security Gateway: остановка релиза ===
+      - name: Fail pipeline if Semgrep found issues
         if: steps.semgrep.outcome == 'failure' && github.event_name == 'pull_request'
         run: exit 1
 
+      # === Security Check: TruffleHog ===
       - name: Run TruffleHog (secret scanning)
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
           extra_args: --only-verified
 
+      # === Security Check: Trivy ===
       - name: Run Trivy (filesystem)
         uses: aquasecurity/trivy-action@master
         with:
@@ -70,19 +75,24 @@ jobs:
           exit-code: '0'
           severity: 'CRITICAL,HIGH'
 
+      - name: Run Trivy (Dockerfile)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'Dockerfile'
+          format: 'table'
+          exit-code: '0'
+
   # ==========================================
-  # НОВЫЙ ДЖОБ: ДЕПЛОЙ НА VDS
+  # ДЖОБ ДЕПЛОЯ НА VDS (Continuous Deployment)
   # ==========================================
   deploy:
     needs: build-and-scan
     runs-on: ubuntu-latest
-    # Запускаем деплой только при пуше в master (не в Pull Request)
+    # Запускаем только при пуше в master
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Deploy to VDS via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -90,14 +100,18 @@ jobs:
           username: ${{ secrets.VDS_USER }}
           key: ${{ secrets.VDS_SSH_KEY }}
           script: |
-            # Клонируем репозиторий, если его нет, или обновляем
-            if [ ! -d "/root/necommerce" ]; then
-              git clone https://github.com/mariarmo2026/node-express-realworld-example-app.git /root/necommerce
+            # Удаляем старую папку necommerce, если она осталась
+            rm -rf /root/necommerce
+            
+            # Клонируем проект в правильную папку realworld-app
+            if [ ! -d "/root/realworld-app" ]; then
+              git clone https://github.com/mariarmo2026/node-express-realworld-example-app.git /root/realworld-app
             fi
-            cd /root/necommerce
+            
+            cd /root/realworld-app
             git pull origin master
             
-            # Создаем .env файл для Docker Compose
+            # Создаем .env файл
             cat > .env << 'EOF'
             DB_PORT_EXTERNAL=30432
             DB_PORT_INTERNAL=5432
@@ -111,7 +125,7 @@ jobs:
             DATABASE_URL=postgresql://postgres:postgres@localhost:30432/realworld
             EOF
             
-            # Перезапускаем контейнеры (собираем образ API и поднимаем базу)
+            # Перезапускаем контейнеры
             docker compose down || true
             docker compose up -d --build
             
